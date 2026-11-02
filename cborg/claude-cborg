@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Run Claude Code against an LBL-hosted model on CBorg, which serves the
+# Anthropic /v1/messages API. lil-agent runs every study through this.
+#
+#   cborg/claude-cborg                                  interactive, GLM (lbl/cborg-coder-max)
+#   cborg/claude-cborg -p "..." --allowedTools Read     one-shot
+#   CBORG_MODEL=lbl/gemma-4 cborg/claude-cborg          another model
+#
+# If Claude Code is set up for Vertex or Bedrock it ignores ANTHROPIC_BASE_URL,
+# and user settings may pin Claude model IDs, so both are switched off here.
+# Project settings (.claude/ in the run directory) still apply.
+set -euo pipefail
+
+MODEL=${CBORG_MODEL:-lbl/cborg-coder-max}
+KEY_FILE=${CBORG_API_KEY_FILE:-$HOME/secrets/cborg-api-key.txt}
+
+# Context window for auto-compact; Claude Code assumes 200k for models it
+# doesn't know. Values from CBorg /model/info (max_input_tokens).
+case $MODEL in
+  lbl/cborg-coder-max*) ctx=917504 ;;
+  lbl/gemma-4*)         ctx=245760 ;;
+  lbl/cborg-deepthought*|lbl/cborg-vision) ctx=229376 ;;
+  lbl/gpt-oss-120b*|lbl/cborg-coder) ctx=114688 ;;
+  *)                    ctx=100000 ;;
+esac
+
+unset CLAUDE_CODE_USE_VERTEX ANTHROPIC_VERTEX_PROJECT_ID CLAUDE_CODE_USE_BEDROCK ANTHROPIC_API_KEY
+# Set when launched from inside another Claude Code session.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID \
+      CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN
+
+export ANTHROPIC_BASE_URL=https://api.cborg.lbl.gov
+export ANTHROPIC_AUTH_TOKEN=${CBORG_API_KEY:-$(cat "$KEY_FILE")}
+export ANTHROPIC_MODEL=$MODEL
+export ANTHROPIC_DEFAULT_FABLE_MODEL=$MODEL
+export ANTHROPIC_DEFAULT_OPUS_MODEL=$MODEL
+export ANTHROPIC_DEFAULT_SONNET_MODEL=$MODEL
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=$MODEL
+export CLAUDE_CODE_SUBAGENT_MODEL=$MODEL
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=${CBORG_CONTEXT_TOKENS:-$ctx}
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+exec claude --setting-sources project,local "$@"

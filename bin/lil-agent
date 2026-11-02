@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# lil-agent entry point. Symlink it into a directory on PATH, e.g.
+#   ln -s "$PWD/bin/lil-agent" ~/.local/bin/lil-agent
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+exec env PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m lil_agent "$@"
