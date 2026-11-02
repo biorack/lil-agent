@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/lil-agent-logo.jpeg" alt="lil-agent logo: a detective in a fedora and sunglasses taking notes beside a flask, books and a laptop" width="280">
+</p>
+
 # lil-agent
 
 Give it a study package: a zip that carries everything the analysis needs,
