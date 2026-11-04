@@ -189,6 +189,15 @@ continues the same agent session, conversation included.
   can have an authorized IPv6 address and an unauthorized IPv4 one.
   `lil-agent check` shows which work. lil-agent prefers IPv6, but authorize
   both (or use the VPN) to be safe.
+- **Replies that are too long.** Each model has a per-reply output cap
+  (32,768 tokens for GLM 5.3 Flash), and reasoning counts toward it. CBorg
+  runs GLM at high reasoning effort and ignores Claude Code's thinking
+  budget, so GLM can reason past the cap when it works through a search in
+  its head. Claude Code then stops with "exceeded the … output token
+  maximum". The prompt states the cap and says to put searches in scripts.
+  If it happens anyway, lil-agent resumes the session at once and tells the
+  agent to use code. Models with selectable reasoning effort (e.g.
+  `cborg-coder-ultra-low` or `-medium`) are an alternative.
 - **Chained shell commands.** Claude Code holds commands chained with `&&`,
   `;` or `|` for approval, which headless runs can't give. The agent is
   told to run one command per call and put multi-step work in scripts.

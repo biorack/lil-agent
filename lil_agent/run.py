@@ -56,8 +56,20 @@ and run it from there, so the analysis can be rerun.
 - Put everything you produce under outputs/, and keep a log of what you did and why \
 in outputs/notes.md.
 {memory_line}
+{reasoning_line}
 {skill_line}
 Finish with a short summary of what you produced and anything you could not do."""
+
+REASONING_LINE = """\
+- Keep your reasoning short. Each of your replies, reasoning included, is cut off and lost \
+at {limit}. Anything that needs a search, an enumeration or many comparisons (trying many \
+candidates, checking many combinations) belongs in a script, not in your head."""
+
+OUTPUT_LIMIT_MESSAGE = """\
+Your last reply went over the output limit ({limit}) and was lost. Don't work things out \
+at length in your reasoning: write a script for the search or analysis you were doing, run \
+it, and continue the task.
+{reasoning_line}"""
 
 MEMORY_LINE = """\
 - This computer has {ram} GB of memory, shared with other programs: keep each Python \
@@ -69,7 +81,8 @@ out of memory: make it leaner rather than rerunning it."""
 RESUME_MESSAGE = """\
 Your previous session stopped before you finished ({reason}). Look at outputs/notes.md \
 and what is already in outputs/, then continue the task from where you left off.
-{memory_line}"""
+{memory_line}
+{reasoning_line}"""
 
 
 def settings():
@@ -171,6 +184,24 @@ def _show(event, state):
                 print(f"        ! {' '.join(str(content).split())[:160]}", flush=True)
 
 
+def max_output_tokens(entry):
+    """CBorg's per-reply output cap for the model (reasoning included), or None."""
+    info = (entry or {}).get("model_info") or {}
+    return info.get("max_output_tokens") or ((entry or {}).get("litellm_params") or {}).get(
+        "max_tokens")
+
+
+def reasoning_line(entry):
+    cap = max_output_tokens(entry)
+    return REASONING_LINE.format(limit=f"{cap:,} tokens" if cap else "a fixed length")
+
+
+def _hit_output_limit(result):
+    """Claude Code gave up because one reply was longer than the output cap."""
+    return bool(result and result.get("is_error") and re.search(
+        r"exceeded the [\d,]+ output token maximum", result.get("result") or ""))
+
+
 def memory_line():
     try:
         ram = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
@@ -232,6 +263,20 @@ def _transient(result):
         return False
     return (result.get("api_error_status") in TRANSIENT or
             bool(re.search(r"API Error: (429|5\d\d)|overloaded", result.get("result") or "", re.I)))
+
+
+def _last_result_text(run_dir):
+    """The final result message in the run's transcript, or ''."""
+    text = ""
+    path = run_dir / ".lil" / "transcript.jsonl"
+    if path.exists():
+        for line in open(path):
+            if '"type":"result"' in line:
+                try:
+                    text = json.loads(line).get("result") or ""
+                except json.JSONDecodeError:
+                    pass
+    return text
 
 
 def _session_from_transcript(run_dir):
@@ -324,6 +369,11 @@ def _after_error(result, rc, run_dir):
     if result is None:
         return (f"Claude Code stopped without a result (exit {rc}); see "
                 f"{run_dir}/.lil/stderr.log")
+    if _hit_output_limit(result):
+        return ("the model's replies kept going over its output limit, almost always from "
+                "very long reasoning. lil-agent resume tells it to put searches in code; or "
+                "try a model with lower reasoning effort (e.g. cborg-coder-ultra-medium or "
+                "-low; lil-agent models shows what exists)")
     if status in TRANSIENT:
         return "CBorg kept failing with temporary errors; try again later with lil-agent resume"
     if status in (401, 403):
@@ -352,6 +402,10 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
     if prov["context"] and "CBORG_CONTEXT_TOKENS" not in os.environ:
         # Claude Code's auto-compact needs the real window; CBorg changes it.
         env["CBORG_CONTEXT_TOKENS"] = str(prov["context"])
+    cap = max_output_tokens(entry)
+    if cap:
+        # CBorg's real per-reply cap; Claude Code otherwise guesses.
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(cap)
 
     path = lil / "run.json"
     info = json.loads(path.read_text()) if path.exists() else {}
@@ -394,9 +448,18 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
                 "api_error_status": (result or {}).get("api_error_status"),
                 "model_provenance": prov,
             })
-            if not (_transient(result) and session_id and tries < RETRIES):
+            too_long = _hit_output_limit(result)
+            if not ((_transient(result) or too_long) and session_id and tries < RETRIES):
                 break
             tries += 1
+            if too_long:
+                print(f"\nthe model's reply went over its output limit; resuming the session "
+                      f"and telling it to use code instead (retry {tries} of {RETRIES})",
+                      flush=True)
+                message = OUTPUT_LIMIT_MESSAGE.format(
+                    limit=f"{cap:,} tokens" if cap else "a fixed length",
+                    reasoning_line=reasoning_line(entry))
+                continue
             wait = RETRY_WAIT_S * tries
             if deadline and time.time() + wait > deadline:
                 break
@@ -405,7 +468,8 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
                   f"(retry {tries} of {RETRIES})", flush=True)
             time.sleep(wait)
             message = RESUME_MESSAGE.format(reason="the model server timed out",
-                                            memory_line=memory_line())
+                                            memory_line=memory_line(),
+                                            reasoning_line=reasoning_line(entry))
     except KeyboardInterrupt:
         print("\ninterrupted; saving what the agent produced so far", file=sys.stderr)
         rc, stop = 130, "interrupted"
@@ -477,6 +541,7 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
                   ". Read them before you start and follow them wherever the "
                   "instructions refer to them or they apply." if skills else "")
     prompt = PROMPT.format(zip_name=zip_path.name, memory_line=memory_line(),
+                           reasoning_line=reasoning_line(entry),
                            skill_line=skill_line)
     return _execute(run_dir, model, prompt, entry, self_report, max_turns=max_turns,
                     timeout_min=timeout_min, interactive=interactive)
@@ -506,6 +571,10 @@ def resume(run_dir, message=None, model=None, max_turns=300, timeout_min=None,
         print(f"warning: {model} is not LBL-hosted; data will leave LBL", file=sys.stderr)
     print(f"resuming session {session_id[:8]} in {run_dir}"
           + (f", switching model from {previous} to {model}" if model != previous else ""))
-    message = message or RESUME_MESSAGE.format(reason=reason, memory_line=memory_line())
+    if not message and _hit_output_limit({"is_error": info.get("is_error"),
+                                          "result": _last_result_text(run_dir)}):
+        reason = "your last reply went over the output limit and was lost"
+    message = message or RESUME_MESSAGE.format(reason=reason, memory_line=memory_line(),
+                                               reasoning_line=reasoning_line(entry))
     return _execute(run_dir, model, message, entry, self_report, session_id=session_id,
                     max_turns=max_turns, timeout_min=timeout_min, interactive=interactive)
