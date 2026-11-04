@@ -197,7 +197,11 @@ continues the same agent session, conversation included.
   maximum". The prompt states the cap and says to put searches in scripts.
   If it happens anyway, lil-agent resumes the session at once and tells the
   agent to use code. Models with selectable reasoning effort (e.g.
-  `cborg-coder-ultra-low` or `-medium`) are an alternative.
+  `cborg-coder-ultra-low` or `-medium`) are an alternative. You can also
+  raise the cap: CBorg accepts larger values (tested up to 131,072), and an
+  exported `CLAUDE_CODE_MAX_OUTPUT_TOKENS` is used as is. Leave room for the
+  conversation, though: cap plus history must fit the model's context
+  (229k tokens for these models), so 65,536 is a sensible ceiling.
 - **Chained shell commands.** Claude Code holds commands chained with `&&`,
   `;` or `|` for approval, which headless runs can't give. The agent is
   told to run one command per call and put multi-step work in scripts.

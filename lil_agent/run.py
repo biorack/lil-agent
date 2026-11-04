@@ -185,7 +185,12 @@ def _show(event, state):
 
 
 def max_output_tokens(entry):
-    """CBorg's per-reply output cap for the model (reasoning included), or None."""
+    """Per-reply output cap (reasoning included): CLAUDE_CODE_MAX_OUTPUT_TOKENS if
+    you set it, otherwise CBorg's figure for the model, or None."""
+    try:
+        return int(os.environ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"])
+    except (KeyError, ValueError):
+        pass
     info = (entry or {}).get("model_info") or {}
     return info.get("max_output_tokens") or ((entry or {}).get("litellm_params") or {}).get(
         "max_tokens")
@@ -403,9 +408,11 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
         # Claude Code's auto-compact needs the real window; CBorg changes it.
         env["CBORG_CONTEXT_TOKENS"] = str(prov["context"])
     cap = max_output_tokens(entry)
-    if cap:
-        # CBorg's real per-reply cap; Claude Code otherwise guesses.
+    if cap and "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in os.environ:
+        # CBorg's per-reply cap; Claude Code otherwise guesses. A value you
+        # export is used as is (CBorg accepts larger ones).
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(cap)
+    prov["max_output_tokens"] = cap
 
     path = lil / "run.json"
     info = json.loads(path.read_text()) if path.exists() else {}
