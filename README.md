@@ -72,7 +72,7 @@ A package needs:
 | `  --model M` | another CBorg model, e.g. `lbl/gemma-4` (or set `CBORG_MODEL`) |
 | `  --interactive` | open a Claude Code session in the run folder instead; you approve each step |
 | `  --timeout MIN`, `--max-turns N`, `--runs-dir DIR` | limits and location (default `~/lil_runs`) |
-| `lil-agent resume RUN_DIR` | continue a stopped run where the agent left off (`--message` to tell it something) |
+| `lil-agent resume RUN_DIR` | continue a stopped run where the agent left off (`--message` to tell it something, `--model` to switch models) |
 | `lil-agent models [--all] [--probe NAMES]` | list LBL-hosted models with CBorg's label for each; test chat and tool calls |
 | `lil-agent check` | key, CBorg access over IPv6/IPv4, model, `claude`, and the network guard |
 
@@ -153,6 +153,23 @@ It warns when the label or context size no longer matches that record,
 which is how a silent switch by CBorg shows up. Each resumed session is recorded
 separately, so a model swapped between a run and its resume shows up. See
 [CBORG.md](CBORG.md#which-model-is-behind-each-alias).
+
+## When a model or CBorg is unavailable
+
+Before creating a run folder (and before resuming), lil-agent checks that
+the model is in CBorg's list and answers one short request. If it isn't
+listed, lil-agent names similar models (for example `cborg-coder-ultra-medium`
+for a mistyped `lbl/cborg-coder-ultra-medium`) and the default. If it's
+listed but not answering, it says so and suggests what to try. If a model
+disappears in the middle of a project, continue on another one with
+`lil-agent resume RUN_DIR --model NAME`; each session's model is recorded.
+
+CBorg's address is `https://api.cborg.lbl.gov` unless `CBORG_BASE_URL` is
+set, and the network guard follows it. If CBorg can't be reached or
+answers with something unexpected, lil-agent prints what went wrong and
+what to check (network, VPN, `CBORG_BASE_URL`) instead of crashing. If only
+CBorg's model list is unavailable, runs continue without the model check
+and provenance.
 
 ## When a run stops
 

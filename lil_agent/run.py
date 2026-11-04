@@ -247,10 +247,67 @@ def _session_from_transcript(run_dir):
     return None
 
 
-def _model_provenance(model, entry):
+def _what_to_try(model, entries, run_dir=None):
+    """Lines suggesting other models when this one is unavailable."""
+    lines = []
+    close = cborg.alternatives(model, entries) if entries else []
+    if close:
+        lines.append(f"  similar models: {', '.join(close)}")
+    if model != cborg.DEFAULT_MODEL and (entries is None or any(
+            e["model_name"] == cborg.DEFAULT_MODEL for e in entries)):
+        lines.append(f"  lil-agent's default: {cborg.DEFAULT_MODEL}")
+    lines.append("  all LBL-hosted models: lil-agent models; "
+                 "test one: lil-agent models --probe NAME")
+    if run_dir:
+        lines.append(f"  continue this run with another model: "
+                     f"lil-agent resume {run_dir} --model NAME")
+    return lines
+
+
+def _check_model(model, run_dir=None):
+    """CBorg's entry for the model and its self-report, after checking that it
+    is listed and answers. Exits with suggestions if it isn't usable."""
+    entries, entry = None, None
+    try:
+        entries = cborg.model_list()
+        entry = cborg.model_entry(model, entries)
+    except cborg.Unavailable as e:
+        if e.kind in ("auth", "network"):
+            sys.exit(f"lil-agent: {e}")
+        print(f"warning: couldn't read CBorg's model list: {e}\n"
+              f"  continuing without checking or recording the model", file=sys.stderr)
+    if entries is not None and entry is None:
+        sys.exit("\n".join([f"lil-agent: CBorg doesn't list a model called {model!r}."]
+                           + _what_to_try(model, entries, run_dir)))
+
+    answer, problem = cborg.self_report(model)
+    if problem is None:
+        return entry, answer
+    if problem.kind == "timeout" or problem.status in TRANSIENT:
+        print(f"warning: {model} didn't answer a test request ({problem}); starting "
+              f"anyway, since temporary CBorg errors are retried", file=sys.stderr)
+        return entry, None
+    if problem.kind in ("auth", "network"):
+        sys.exit(f"lil-agent: {problem}")
+    if entries is None:
+        sys.exit(f"lil-agent: {model} isn't answering ({problem}), and CBorg's model list "
+                 f"was unavailable too, so CBorg's address may have changed: check "
+                 f"{cborg.API_BASE} or set CBORG_BASE_URL")
+    sys.exit("\n".join([f"lil-agent: {model} is in CBorg's list but isn't answering: "
+                        f"{problem}"] + _what_to_try(model, entries, run_dir)))
+
+
+def _model_provenance(model, entry, self_report):
     """Record which model this session is believed to use, and say so."""
-    prov = cborg.provenance(entry)
-    prov["self_report"] = cborg.self_report(model)
+    if entry:
+        prov = cborg.provenance(entry)
+    else:
+        prov = {"backend": None, "cborg_label": None, "believed_model": None,
+                "believed_since": None, "context": None,
+                "warnings": ["CBorg's model list was unavailable, so the model's identity "
+                             "wasn't checked"]}
+    prov["model"] = model
+    prov["self_report"] = self_report
     believed = prov["believed_model"] or "unknown model"
     print(f"model: {model} -> {believed}"
           + (f" (recorded {prov['believed_since']})" if prov["believed_since"] else ""))
@@ -260,11 +317,31 @@ def _model_provenance(model, entry):
     return prov
 
 
-def _execute(run_dir, model, message, entry, session_id=None, max_turns=300,
+def _after_error(result, rc, run_dir):
+    """A line saying what to do after a session that ended on an error."""
+    status = (result or {}).get("api_error_status")
+    text = (result or {}).get("result") or ""
+    if result is None:
+        return (f"Claude Code stopped without a result (exit {rc}); see "
+                f"{run_dir}/.lil/stderr.log")
+    if status in TRANSIENT:
+        return "CBorg kept failing with temporary errors; try again later with lil-agent resume"
+    if status in (401, 403):
+        return cborg.IP_HELP if "not recognized" in text else "CBorg rejected the API key"
+    if status:
+        return (f"the model stopped answering (API error {status}); continue with another "
+                f"model: lil-agent resume {run_dir} --model NAME (see lil-agent models)")
+    if re.search(r"connection|ECONN|fetch failed|network", text, re.I):
+        return (f"Claude Code couldn't reach CBorg at {cborg.API_BASE}; check the network "
+                f"or VPN (or CBORG_BASE_URL), then lil-agent resume")
+    return None
+
+
+def _execute(run_dir, model, message, entry, self_report, session_id=None, max_turns=300,
              timeout_min=None, interactive=False):
     """Run (or resume) the agent behind the network guard; record and summarize."""
     lil = run_dir / ".lil"
-    prov = _model_provenance(model, entry)
+    prov = _model_provenance(model, entry, self_report)
     proxy = AllowlistProxy({cborg.HOST}, lil / "network.log").start()
     env = dict(os.environ)
     for k in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"):
@@ -358,6 +435,11 @@ def _execute(run_dir, model, message, entry, session_id=None, max_turns=300,
           f"exit {rc}, stop {info['stop']}"
           + (f", {tries} automatic resume(s)" if tries else ""))
     print(f"outputs: {len(outputs)} files under outputs/")
+    if info["is_error"] or (rc not in (0, None) and info["stop"] not in ("interrupted",
+                                                                          "timeout")):
+        hint = _after_error(result, rc, run_dir)
+        if hint:
+            print(f"problem: {hint}")
     if info["is_error"] or info["stop"] in ("interrupted", "timeout") or rc not in (0, None):
         print(f"to continue: lil-agent resume {run_dir}")
     print("network (Claude Code process; full log in .lil/network.log):")
@@ -378,10 +460,8 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
         sys.exit(f"lil-agent: skill must be a directory: {skill}")
     runs_dir = Path(runs_dir or os.environ.get("LIL_RUNS", "~/lil_runs")).expanduser()
 
-    entry = cborg.model_entry(model)
-    if entry is None:
-        sys.exit(f"lil-agent: CBorg has no model {model!r} (see: lil-agent models)")
-    if not cborg.is_lbl_hosted(entry):
+    entry, self_report = _check_model(model)
+    if entry and not cborg.is_lbl_hosted(entry):
         print(f"warning: {model} is not LBL-hosted; data will leave LBL", file=sys.stderr)
 
     run_dir, skills = prepare(zip_path, model, skill, runs_dir)
@@ -398,11 +478,12 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
                   "instructions refer to them or they apply." if skills else "")
     prompt = PROMPT.format(zip_name=zip_path.name, memory_line=memory_line(),
                            skill_line=skill_line)
-    return _execute(run_dir, model, prompt, entry, max_turns=max_turns,
+    return _execute(run_dir, model, prompt, entry, self_report, max_turns=max_turns,
                     timeout_min=timeout_min, interactive=interactive)
 
 
-def resume(run_dir, message=None, max_turns=300, timeout_min=None, interactive=False):
+def resume(run_dir, message=None, model=None, max_turns=300, timeout_min=None,
+           interactive=False):
     """Continue a stopped run's agent session where it left off."""
     run_dir = Path(run_dir).expanduser().resolve()
     path = run_dir / ".lil" / "run.json"
@@ -412,16 +493,19 @@ def resume(run_dir, message=None, max_turns=300, timeout_min=None, interactive=F
     session_id = info.get("session_id") or _session_from_transcript(run_dir)
     if not session_id:
         sys.exit("lil-agent: no agent session recorded for this run; start a new run")
-    model = info.get("model", cborg.DEFAULT_MODEL)
+    previous = (info.get("attempts") or [{}])[-1].get("model_provenance", {}).get("model") \
+        or info.get("model", cborg.DEFAULT_MODEL)
+    model = model or previous
     reason = info.get("stop") or "unknown reason"
     if info.get("is_error"):
         status = (info.get("attempts") or [{}])[-1].get("api_error_status")
         reason = f"API error {status}" if status else "an error"
-    # Fetched again: CBorg may have changed the model since the run started.
-    entry = cborg.model_entry(model)
-    if entry is None:
-        sys.exit(f"lil-agent: CBorg no longer lists {model!r}; the session can't be resumed")
-    print(f"resuming session {session_id[:8]} in {run_dir}")
+    # Checked again: CBorg may have changed or removed the model since then.
+    entry, self_report = _check_model(model, run_dir)
+    if entry and not cborg.is_lbl_hosted(entry):
+        print(f"warning: {model} is not LBL-hosted; data will leave LBL", file=sys.stderr)
+    print(f"resuming session {session_id[:8]} in {run_dir}"
+          + (f", switching model from {previous} to {model}" if model != previous else ""))
     message = message or RESUME_MESSAGE.format(reason=reason, memory_line=memory_line())
-    return _execute(run_dir, model, message, entry, session_id=session_id,
+    return _execute(run_dir, model, message, entry, self_report, session_id=session_id,
                     max_turns=max_turns, timeout_min=timeout_min, interactive=interactive)

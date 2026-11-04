@@ -25,12 +25,16 @@ def cmd_run(args):
 
 def cmd_resume(args):
     from .run import resume
-    return resume(args.run_dir, message=args.message, max_turns=args.max_turns,
+    return resume(args.run_dir, message=args.message, model=args.model,
+                  max_turns=args.max_turns,
                   timeout_min=args.timeout, interactive=args.interactive)
 
 
 def cmd_models(args):
     rows = cborg.model_rows(include_all=args.all)
+    if not rows:
+        print("CBorg's model list has no LBL-hosted models (try --all)")
+        return 1
     if not args.probe:
         cborg.print_table(rows)
         return 0
@@ -42,11 +46,11 @@ def cmd_models(args):
     return 0
 
 
-def _through_proxy(proxy, host):
-    """Status line the proxy returns for a CONNECT to host:443."""
-    with socket.create_connection(("127.0.0.1", proxy.server_address[1]), 10) as s:
-        s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
-        return s.recv(200).decode("latin-1").splitlines()[0]
+def _through_proxy(proxy, host, port=443):
+    """Status line the proxy returns for a CONNECT to host:port."""
+    with socket.create_connection(("127.0.0.1", proxy.server_address[1]), 40) as s:
+        s.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        return (s.recv(200).decode("latin-1").splitlines() or ["(no answer)"])[0]
 
 
 def cmd_check(args):
@@ -57,8 +61,19 @@ def cmd_check(args):
     print("CBorg access: " + ", ".join(f"{k} {v or 'no route'}" for k, v in families.items()))
     if 403 in families.values():
         print(f"  {cborg.IP_HELP}")
-    entry = cborg.model_entry(args.model)
-    print(f"model {args.model}: {'listed' if entry else 'NOT LISTED'} on CBorg")
+    print(f"CBorg address: {cborg.API_BASE}")
+    try:
+        entries = cborg.model_list()
+    except cborg.Unavailable as e:
+        print(f"model list: UNAVAILABLE: {e}")
+        entries = None
+    entry = cborg.model_entry(args.model, entries) if entries is not None else None
+    if entries is not None:
+        print(f"model {args.model}: {'listed' if entry else 'NOT LISTED'} on CBorg")
+        if not entry:
+            close = cborg.alternatives(args.model, entries)
+            print(f"  similar models: {', '.join(close) if close else 'none'}; "
+                  f"see lil-agent models")
     if entry:
         prov = cborg.provenance(entry)
         print(f"  CBorg label: {prov['cborg_label']}")
@@ -73,7 +88,7 @@ def cmd_check(args):
     ok &= version.returncode == 0
     proxy = AllowlistProxy({cborg.HOST}).start()
     try:
-        allowed = _through_proxy(proxy, cborg.HOST)
+        allowed = _through_proxy(proxy, cborg.HOST, cborg.PORT)
         blocked = _through_proxy(proxy, "api.anthropic.com")
     finally:
         proxy.stop()
@@ -105,6 +120,7 @@ def main(argv=None):
     s = sub.add_parser("resume", help="continue a stopped run where its agent left off")
     s.add_argument("run_dir")
     s.add_argument("--message", help="what to tell the agent (default: continue the task)")
+    s.add_argument("--model", help="continue with a different model (default: the run's last)")
     s.add_argument("--max-turns", type=int, default=300)
     s.add_argument("--timeout", type=float, help="minutes before the agent is stopped")
     s.add_argument("--interactive", action="store_true",
@@ -121,4 +137,7 @@ def main(argv=None):
     c.set_defaults(func=cmd_check)
 
     args = ap.parse_args(argv)
-    sys.exit(args.func(args))
+    try:
+        sys.exit(args.func(args))
+    except cborg.Unavailable as e:  # anything not handled closer to the call
+        sys.exit(f"lil-agent: {e}")

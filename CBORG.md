@@ -5,7 +5,8 @@ OpenAI-style `/v1/chat/completions` and Anthropic-style `/v1/messages`. The
 `lbl/*` models run on LBL hardware (`ext1`/`ext2.cborg.lbl.gov`) and cost
 nothing. There are no nodes to allocate, no model load wait, and no tunnel.
 
-Key: `~/secrets/cborg-api-key.txt` (or `$CBORG_API_KEY`).
+Key: `~/secrets/cborg-api-key.txt` (or `$CBORG_API_KEY`). If CBorg moves,
+set `CBORG_BASE_URL`.
 
 ## Commands
 

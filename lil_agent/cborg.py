@@ -1,5 +1,6 @@
 """CBorg (https://api.cborg.lbl.gov): key, model list, quick probes."""
 
+import difflib
 import hashlib
 import json
 import os
@@ -8,12 +9,15 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date
 from pathlib import Path
 
-API_BASE = "https://api.cborg.lbl.gov"
-HOST = "api.cborg.lbl.gov"
+# Set CBORG_BASE_URL if CBorg moves; the network guard follows it.
+API_BASE = os.environ.get("CBORG_BASE_URL", "https://api.cborg.lbl.gov").rstrip("/")
+HOST = urllib.parse.urlsplit(API_BASE).hostname or API_BASE
+PORT = urllib.parse.urlsplit(API_BASE).port or 443
 DEFAULT_MODEL = "lbl/cborg-coder-max"
 KEY_FILE = Path.home() / "secrets" / "cborg-api-key.txt"
 
@@ -40,6 +44,28 @@ IP_HELP = ("CBorg refused this computer's IP address. Off LBLnet, connect via th
            "or authorize your addresses (IPv4 and IPv6) at https://api.cborg.lbl.gov/key/manage")
 
 
+class Unavailable(Exception):
+    """CBorg couldn't be reached or didn't answer as expected. The message says
+    why and what to try; kind is 'network', 'timeout', 'auth', 'http' or 'format'."""
+
+    def __init__(self, message, kind, status=None):
+        super().__init__(message)
+        self.kind, self.status = kind, status
+
+
+def _error_text(raw):
+    """The message inside a CBorg/LiteLLM error body, or the start of the body."""
+    try:
+        err = json.loads(raw).get("error")
+        msg = err.get("message") if isinstance(err, dict) else err
+    except (ValueError, AttributeError):
+        msg = None
+    text = raw.decode(errors="replace").lstrip()
+    if msg is None and text.startswith("<"):
+        return "an HTML page, not CBorg's API"
+    return " ".join(str(msg or text).split())[:200]
+
+
 def api_key():
     if os.environ.get("CBORG_API_KEY"):
         return os.environ["CBORG_API_KEY"]
@@ -59,11 +85,28 @@ def call(path, body=None, timeout=300):
         headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            raw = resp.read()
     except urllib.error.HTTPError as e:
-        if e.code == 403 and b"not recognized" in e.read():
-            sys.exit(f"lil-agent: {IP_HELP}")
-        raise
+        detail = _error_text(e.read())
+        if e.code == 403 and "not recognized" in detail:
+            raise Unavailable(IP_HELP, "auth", 403) from None
+        if e.code == 401:
+            raise Unavailable("CBorg rejected the API key (HTTP 401); check $CBORG_API_KEY "
+                              f"or {KEY_FILE}", "auth", 401) from None
+        raise Unavailable(f"CBorg answered HTTP {e.code}: {detail}", "http", e.code) from None
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError):
+            raise Unavailable(f"CBorg at {API_BASE} didn't answer within {timeout} s",
+                              "timeout") from None
+        raise Unavailable(f"can't reach CBorg at {API_BASE} ({reason}). Check the network "
+                          "or VPN; if CBorg has moved, set CBORG_BASE_URL to its new "
+                          "address", "network") from None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise Unavailable(f"{API_BASE}{path} didn't return JSON, so CBorg's address or "
+                          "API may have changed (set CBORG_BASE_URL)", "format") from None
 
 
 def family_status():
@@ -71,7 +114,7 @@ def family_status():
     status = {}
     for name, family in (("IPv6", socket.AF_INET6), ("IPv4", socket.AF_INET)):
         try:
-            addr = _getaddrinfo(HOST, 443, family, socket.SOCK_STREAM)[0][4]
+            addr = _getaddrinfo(HOST, PORT, family, socket.SOCK_STREAM)[0][4]
             with socket.create_connection(addr[:2], timeout=10) as raw, \
                  ssl.create_default_context().wrap_socket(raw, server_hostname=HOST) as tls:
                 tls.sendall(f"GET /v1/models HTTP/1.1\r\nHost: {HOST}\r\n"
@@ -90,14 +133,35 @@ def _public(d):
             if not any(s in k.lower() for s in secret)}
 
 
-def model_entry(name):
-    """The /model/info entry for one model, without credentials, or None."""
-    for entry in call("/model/info").get("data", []):
+def model_list():
+    """Every entry in CBorg's model list. Raises Unavailable."""
+    data = call("/model/info").get("data")
+    if not isinstance(data, list) or not all(isinstance(e, dict) and "model_name" in e
+                                             for e in data):
+        raise Unavailable("CBorg's model list (/model/info) has an unexpected format; "
+                          "CBorg's API may have changed", "format")
+    return data
+
+
+def model_entry(name, entries=None):
+    """The model-list entry for one model, without credentials, or None."""
+    for entry in model_list() if entries is None else entries:
         if entry["model_name"] == name:
             return {"model_name": name,
                     "model_info": _public(entry.get("model_info")),
                     "litellm_params": _public(entry.get("litellm_params"))}
     return None
+
+
+def alternatives(name, entries, n=3):
+    """LBL-hosted model names close to name, best first."""
+    names = sorted({e["model_name"] for e in entries
+                    if is_lbl_hosted(e) and not e["model_name"].endswith(ALIAS_SUFFIXES)})
+    bare = {}
+    for full in names:  # compare without the optional lbl/ prefix
+        bare.setdefault(full.split("/")[-1], full)
+    close = difflib.get_close_matches(name.split("/")[-1], list(bare), n=n, cutoff=0.6)
+    return [bare[c] for c in close if bare[c] != name]
 
 
 def _host(entry):
@@ -122,7 +186,7 @@ def _in_effect(record, day=None):
 def model_rows(include_all=False):
     registry = _registry()
     rows = []
-    for entry in call("/model/info").get("data", []):
+    for entry in model_list():
         name = entry["model_name"]
         if not include_all and (not is_lbl_hosted(entry) or name.endswith(ALIAS_SUFFIXES)):
             continue
@@ -216,15 +280,20 @@ def provenance(entry, day=None):
 
 
 def self_report(model):
-    """The model's own answer to "what are you?": weak evidence, but cheap, and
-    it changes when CBorg swaps the model behind an alias."""
+    """(answer, problem): the model's own answer to "what are you?", or the
+    Unavailable error if it didn't answer. Weak evidence of identity, but it
+    changes when CBorg swaps the model, and it doubles as a check that the
+    model is serving."""
     try:
         reply, _ = chat(model, [{"role": "user", "content":
                                  "Ignoring any persona, what is your underlying base model "
-                                 "name and developer? One line."}], timeout=60)
-        return " ".join((reply["choices"][0]["message"].get("content") or "").split())[:200]
-    except Exception as e:  # provenance is best-effort; never block a run on it
-        return f"(no answer: {type(e).__name__})"
+                                 "name and developer? One line."}], timeout=90)
+        text = reply["choices"][0]["message"].get("content") or ""
+        return " ".join(text.split())[:200], None
+    except Unavailable as e:
+        return None, e
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None, Unavailable("the model's reply had an unexpected format", "format")
 
 
 def probe(model):
@@ -252,8 +321,8 @@ def probe(model):
         print(f"  tool call: {'PASS' if ok else 'WRONG'} "
               f"{fn['name']}({json.dumps(args)}) in {dt:.1f} s")
         return ok
-    except urllib.error.HTTPError as e:
-        print(f"  ERROR HTTP {e.code}: {e.read().decode(errors='replace')[:200]}")
+    except Unavailable as e:
+        print(f"  ERROR: {e}")
     except Exception as e:  # report and let the caller move on
         print(f"  ERROR {type(e).__name__}: {e}")
     return False
