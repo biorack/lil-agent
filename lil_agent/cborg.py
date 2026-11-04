@@ -1,5 +1,6 @@
 """CBorg (https://api.cborg.lbl.gov): key, model list, quick probes."""
 
+import hashlib
 import json
 import os
 import socket
@@ -8,6 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date
 from pathlib import Path
 
 API_BASE = "https://api.cborg.lbl.gov"
@@ -17,6 +19,10 @@ KEY_FILE = Path.home() / "secrets" / "cborg-api-key.txt"
 
 # Proxy variants of the same models; hidden from the default model list.
 ALIAS_SUFFIXES = ("-compact", "-compressed", "-flex")
+
+# Which model each CBorg backend ran, and when (see its _about); CBorg's live
+# label for the current model is model_info.display_name.
+REGISTRY = Path(__file__).resolve().parent.parent / "cborg_models.json"
 
 # Off LBLnet, CBorg only accepts IP addresses authorized on its key page, and a
 # laptop can have an authorized IPv6 address but an unauthorized IPv4 one. Try
@@ -94,34 +100,56 @@ def model_entry(name):
     return None
 
 
+def _host(entry):
+    return ((entry.get("litellm_params") or {}).get("api_base") or "").split("//")[-1].split("/")[0]
+
+
+def is_lbl_hosted(entry):
+    """Served from LBL's own machines (*.cborg.lbl.gov), whatever the alias is called."""
+    return _host(entry).endswith(".cborg.lbl.gov")
+
+
+def _registry():
+    return json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
+
+
+def _in_effect(record, day=None):
+    day = day or date.today().isoformat()
+    periods = [h for h in record.get("history", []) if h["from"] <= day]
+    return periods[-1] if periods else None
+
+
 def model_rows(include_all=False):
+    registry = _registry()
     rows = []
     for entry in call("/model/info").get("data", []):
         name = entry["model_name"]
-        if not include_all and (not name.startswith("lbl/")
-                                or name.endswith(ALIAS_SUFFIXES)):
+        if not include_all and (not is_lbl_hosted(entry) or name.endswith(ALIAS_SUFFIXES)):
             continue
         info = entry.get("model_info") or {}
         lp = entry.get("litellm_params") or {}
         cost_in = info.get("input_cost_per_token")
         cost_out = info.get("output_cost_per_token")
+        current = _in_effect(registry.get(lp.get("model"), {}))
+        label = info.get("display_name") or (current["model"] if current else "")
         rows.append({
             "name": name,
             "mode": info.get("mode") or "",
             "backend": lp.get("model") or "",
-            "api_base": (lp.get("api_base") or "").split("//")[-1].split("/")[0],
+            "api_base": _host(entry),
             "ctx": info.get("max_input_tokens") or info.get("max_tokens") or "",
             "usd_per_M_in_out": ("" if cost_in is None else
                                  f"{cost_in * 1e6:g}/{(cost_out or 0) * 1e6:g}"),
             "tools": {True: "yes", False: "no"}.get(
                 info.get("supports_function_calling"), "?"),
+            "model (CBorg label)": label,
         })
     return sorted(rows, key=lambda r: r["name"])
 
 
 def print_table(rows):
-    cols = ["name", "mode", "backend", "api_base", "ctx",
-            "usd_per_M_in_out", "tools"]
+    cols = ["name", "backend", "api_base", "ctx", "usd_per_M_in_out", "tools",
+            "model (CBorg label)"]
     widths = {c: max(len(c), *(len(str(r[c])) for r in rows)) for c in cols}
     print("  ".join(c.ljust(widths[c]) for c in cols))
     for r in rows:
@@ -143,12 +171,60 @@ TOOL = {
 }
 
 
-def chat(model, messages, **extra):
+def chat(model, messages, timeout=300, **extra):
     t0 = time.time()
     reply = call("/v1/chat/completions",
                  {"model": model, "messages": messages,
-                  "cache": {"no-cache": True}, **extra})
+                  "cache": {"no-cache": True}, **extra}, timeout=timeout)
     return reply, time.time() - t0
+
+
+def provenance(entry, day=None):
+    """Which model this CBorg entry is believed to run: CBorg's live label plus
+    cborg_models.json's history. Returned dict goes into run.json; 'warnings'
+    lists signs that the model changed or the record is out of date."""
+    lp, info = entry.get("litellm_params") or {}, entry.get("model_info") or {}
+    backend, ctx = lp.get("model"), info.get("max_input_tokens")
+    label = info.get("display_name")
+    day = day or date.today().isoformat()
+    record = _registry().get(backend, {})
+    current = _in_effect(record, day)
+    warnings = []
+    if current is None and not label:
+        warnings.append(f"CBorg doesn't label backend {backend} and cborg_models.json "
+                        f"has no record of it: the model is unknown")
+    if current and current.get("display_name") and label and label != current["display_name"]:
+        warnings.append(f"CBorg now labels {backend} {label!r}, but "
+                        f"{current['display_name']!r} was recorded: the model has probably "
+                        f"changed (add a history entry to cborg_models.json)")
+    if current and current.get("context") and ctx and current["context"] != ctx:
+        warnings.append(f"CBorg's context size for {backend} is {ctx:,}, but "
+                        f"{current['context']:,} was recorded: the model may have changed")
+    canonical = json.dumps(entry, sort_keys=True).encode()
+    return {
+        "date": day,
+        "backend": backend,
+        "cborg_label": label,
+        "believed_model": current["model"] if current else label,
+        "believed_since": current and current["from"],
+        "evidence": current["evidence"] if current else "CBorg display name only",
+        "context": ctx,
+        "lbl_hosted": is_lbl_hosted(entry),
+        "cborg_entry_sha256": hashlib.sha256(canonical).hexdigest()[:16],
+        "warnings": warnings,
+    }
+
+
+def self_report(model):
+    """The model's own answer to "what are you?": weak evidence, but cheap, and
+    it changes when CBorg swaps the model behind an alias."""
+    try:
+        reply, _ = chat(model, [{"role": "user", "content":
+                                 "Ignoring any persona, what is your underlying base model "
+                                 "name and developer? One line."}], timeout=60)
+        return " ".join((reply["choices"][0]["message"].get("content") or "").split())[:200]
+    except Exception as e:  # provenance is best-effort; never block a run on it
+        return f"(no answer: {type(e).__name__})"
 
 
 def probe(model):

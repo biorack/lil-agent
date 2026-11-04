@@ -59,6 +59,14 @@ def cmd_check(args):
         print(f"  {cborg.IP_HELP}")
     entry = cborg.model_entry(args.model)
     print(f"model {args.model}: {'listed' if entry else 'NOT LISTED'} on CBorg")
+    if entry:
+        prov = cborg.provenance(entry)
+        print(f"  CBorg label: {prov['cborg_label']}")
+        print(f"  believed to be: {prov['believed_model'] or 'unknown'}; "
+              f"backend {prov['backend']}, context {prov['context']}, "
+              f"{'LBL-hosted' if prov['lbl_hosted'] else 'NOT LBL-hosted'}")
+        for w in prov["warnings"]:
+            print(f"  warning: {w}")
     ok &= entry is not None and cborg.probe(args.model)
     version = subprocess.run(["claude", "--version"], capture_output=True, text=True)
     print(f"claude: {version.stdout.strip() or 'NOT FOUND'}")

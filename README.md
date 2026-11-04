@@ -73,7 +73,7 @@ A package needs:
 | `  --interactive` | open a Claude Code session in the run folder instead; you approve each step |
 | `  --timeout MIN`, `--max-turns N`, `--runs-dir DIR` | limits and location (default `~/lil_runs`) |
 | `lil-agent resume RUN_DIR` | continue a stopped run where the agent left off (`--message` to tell it something) |
-| `lil-agent models [--all] [--probe NAMES]` | list LBL-hosted models; test chat and tool calls |
+| `lil-agent models [--all] [--probe NAMES]` | list LBL-hosted models with CBorg's label for each; test chat and tool calls |
 | `lil-agent check` | key, CBorg access over IPv6/IPv4, model, `claude`, and the network guard |
 
 ## What a run produces
@@ -138,6 +138,22 @@ Caveats for claims you make:
 - **Local transcripts.** Claude Code keeps its own session transcripts
   under `~/.claude/projects/` on the local disk.
 
+## Which model ran
+
+CBorg changes the models behind its aliases often (`cborg-coder-max` was a
+917k-context GLM deployment in October and is GLM 5.3 Flash now). At the
+start of every run and resume, lil-agent prints which model it believes it
+is using, and records it in `.lil/run.json` under `model_provenance`:
+- CBorg's label for the model (e.g. "CBorg Coder Ultra - Mistral Large 4");
+- the backend, context size and a hash of CBorg's entry;
+- the model's own answer to "what are you?";
+- the history in [cborg_models.json](cborg_models.json).
+
+It warns when the label or context size no longer matches that record,
+which is how a silent switch by CBorg shows up. Each resumed session is recorded
+separately, so a model swapped between a run and its resume shows up. See
+[CBORG.md](CBORG.md#which-model-is-behind-each-alias).
+
 ## When a run stops
 
 Every stop leaves `.lil/run.json` and the work so far, committed to the
@@ -184,3 +200,4 @@ runs gave the same scientific result:
 | [cborg/claude-cborg](cborg/claude-cborg) | Claude Code pointed at a CBorg model; usable on its own |
 | [examples/make_demo_study.py](examples/make_demo_study.py) | synthetic study package for testing |
 | [CBORG.md](CBORG.md) | which LBL-hosted models exist, how they compared, CBorg quirks |
+| [cborg_models.json](cborg_models.json) | which model each CBorg backend ran, and when |

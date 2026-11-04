@@ -16,21 +16,33 @@ cborg/claude-cborg                          # Claude Code driven by an LBL model
 CBORG_MODEL=lbl/gemma-4 cborg/claude-cborg -p "..." --allowedTools Read
 ```
 
-## The LBL-hosted chat models that matter
+## Which model is behind each alias
 
-The "underlying model" column is inferred. For the `cborg-*` aliases, CBorg
-publishes only the alias. The guesses come from the shared rate-limit
-groups in `/model/info` and from the models' own self-reports.
+CBorg changes the models behind its aliases often. Each entry in CBorg's
+model list (`/model/info`, also shown at https://cborg.lbl.gov/models/)
+has a label, `display_name`, that names the current model: for example
+"CBorg Coder Ultra - Mistral Large 4" or "CBorg Coder Max - GLM 5.3
+Flash". `lil-agent models` shows it.
 
-| Name | Underlying model | Context | Notes |
-|---|---|---|---|
-| `lbl/cborg-coder-max` | GLM (Z.ai), self-reported; own hardware | 917k in / 131k out | Strongest in our test |
-| `lbl/cborg-deepthought` | probably Gemma-4-31B (rate group `gemma-4-h100`) | 229k / 32k | reasoning |
-| `lbl/cborg-coder` | probably Gemma-4-31B | 115k / 16k | |
-| `lbl/cborg-chat`, `lbl/cborg-mini` | probably Gemma-4-mini (rate group `gemma-4-mini`) | 98–123k | |
-| `lbl/gemma-4`, `lbl/gemma-4-thinking` | Gemma-4-31B, named directly | 246k / 16k | no proxy-side prompt changes |
-| `lbl/gpt-oss-120b[-low/-medium/-high]` | gpt-oss-120b on vLLM | 115k / 16k | reasoning effort set by the name |
-| `lbl/inkling-small` | ? | 262k | **broken**: its backend returns "Invalid model name" (2026-10-30) |
+- Models count as LBL-hosted when CBorg serves them from
+  `*.cborg.lbl.gov`. Their names don't always start with `lbl/`: for
+  example, `cborg-coder-ultra-medium` and `mistral-large-4` are LBL-hosted.
+- Every lil-agent run and resume records the model's provenance in
+  `.lil/run.json`, under `model_provenance`: CBorg's label, context size
+  and backend, a hash of CBorg's entry, the model's self-report, and what
+  [cborg_models.json](cborg_models.json) says.
+- `cborg_models.json` keeps what the live label can't: which model each
+  backend ran, and when. CBorg switches models without notice. lil-agent
+  warns at the start of a run when CBorg's label or context size no longer
+  matches the record, which is how a switch shows up. Add a history entry
+  when that happens.
+
+As of 2026-11-04:
+- `cborg-coder-ultra` (and its `-low` … `-max` reasoning-effort variants,
+  and `mistral-large-4`) is Mistral Large 4.
+- `cborg-coder-max` is GLM 5.3 Flash with a 229k context. The
+  2026-10-30 tests below used an earlier GLM deployment of the same alias:
+  917k context, served from `ext2`, release unknown.
 
 The `-compact`, `-compressed` and `-flex` suffixes are proxy variants of the
 same models.

@@ -15,13 +15,13 @@ MODEL=${CBORG_MODEL:-lbl/cborg-coder-max}
 KEY_FILE=${CBORG_API_KEY_FILE:-$HOME/secrets/cborg-api-key.txt}
 
 # Context window for auto-compact; Claude Code assumes 200k for models it
-# doesn't know. Values from CBorg /model/info (max_input_tokens).
+# doesn't know. lil-agent passes CBorg's live value in CBORG_CONTEXT_TOKENS;
+# these fallbacks (CBorg /model/info, 2026-11-04) are for running this alone.
 case $MODEL in
-  lbl/cborg-coder-max*) ctx=917504 ;;
-  lbl/gemma-4*)         ctx=245760 ;;
-  lbl/cborg-deepthought*|lbl/cborg-vision) ctx=229376 ;;
-  lbl/gpt-oss-120b*|lbl/cborg-coder) ctx=114688 ;;
-  *)                    ctx=100000 ;;
+  *gemma-4*)                                      ctx=245760 ;;
+  *cborg-coder*|*glm-5.3*|*mistral-large-4*|*cborg-deepthought*|*cborg-vision) ctx=229376 ;;
+  *gpt-oss-120b*)                                 ctx=114688 ;;
+  *)                                              ctx=100000 ;;
 esac
 
 unset CLAUDE_CODE_USE_VERTEX ANTHROPIC_VERTEX_PROJECT_ID CLAUDE_CODE_USE_BEDROCK ANTHROPIC_API_KEY

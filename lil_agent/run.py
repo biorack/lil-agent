@@ -247,10 +247,24 @@ def _session_from_transcript(run_dir):
     return None
 
 
-def _execute(run_dir, model, message, session_id=None, max_turns=300,
+def _model_provenance(model, entry):
+    """Record which model this session is believed to use, and say so."""
+    prov = cborg.provenance(entry)
+    prov["self_report"] = cborg.self_report(model)
+    believed = prov["believed_model"] or "unknown model"
+    print(f"model: {model} -> {believed}"
+          + (f" (recorded {prov['believed_since']})" if prov["believed_since"] else ""))
+    print(f"  CBorg label: {prov['cborg_label']}; self-report: {prov['self_report']}")
+    for w in prov["warnings"]:
+        print(f"  warning: {w}")
+    return prov
+
+
+def _execute(run_dir, model, message, entry, session_id=None, max_turns=300,
              timeout_min=None, interactive=False):
     """Run (or resume) the agent behind the network guard; record and summarize."""
     lil = run_dir / ".lil"
+    prov = _model_provenance(model, entry)
     proxy = AllowlistProxy({cborg.HOST}, lil / "network.log").start()
     env = dict(os.environ)
     for k in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"):
@@ -258,6 +272,9 @@ def _execute(run_dir, model, message, session_id=None, max_turns=300,
     env.update(HTTPS_PROXY=proxy.url, https_proxy=proxy.url,
                HTTP_PROXY=proxy.url, http_proxy=proxy.url,
                CBORG_MODEL=model, MPLCONFIGDIR=str(lil / "mpl"))
+    if prov["context"] and "CBORG_CONTEXT_TOKENS" not in os.environ:
+        # Claude Code's auto-compact needs the real window; CBorg changes it.
+        env["CBORG_CONTEXT_TOKENS"] = str(prov["context"])
 
     path = lil / "run.json"
     info = json.loads(path.read_text()) if path.exists() else {}
@@ -266,6 +283,7 @@ def _execute(run_dir, model, message, session_id=None, max_turns=300,
         info["attempts"] = [{k: info.get(k) for k in
                              ("started", "elapsed_s", "exit_code", "num_turns", "stop")}
                             ] if "elapsed_s" in info else []
+    info.setdefault("model_provenance", prov)
     info["claude_code"] = subprocess.run(["claude", "--version"], capture_output=True,
                                          text=True).stdout.strip()
     started = time.time()
@@ -297,6 +315,7 @@ def _execute(run_dir, model, message, session_id=None, max_turns=300,
                 "num_turns": (result or {}).get("num_turns"),
                 "stop": stop or (result or {}).get("subtype"),
                 "api_error_status": (result or {}).get("api_error_status"),
+                "model_provenance": prov,
             })
             if not (_transient(result) and session_id and tries < RETRIES):
                 break
@@ -362,7 +381,7 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
     entry = cborg.model_entry(model)
     if entry is None:
         sys.exit(f"lil-agent: CBorg has no model {model!r} (see: lil-agent models)")
-    if not model.startswith("lbl/"):
+    if not cborg.is_lbl_hosted(entry):
         print(f"warning: {model} is not LBL-hosted; data will leave LBL", file=sys.stderr)
 
     run_dir, skills = prepare(zip_path, model, skill, runs_dir)
@@ -379,7 +398,7 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
                   "instructions refer to them or they apply." if skills else "")
     prompt = PROMPT.format(zip_name=zip_path.name, memory_line=memory_line(),
                            skill_line=skill_line)
-    return _execute(run_dir, model, prompt, max_turns=max_turns,
+    return _execute(run_dir, model, prompt, entry, max_turns=max_turns,
                     timeout_min=timeout_min, interactive=interactive)
 
 
@@ -398,7 +417,11 @@ def resume(run_dir, message=None, max_turns=300, timeout_min=None, interactive=F
     if info.get("is_error"):
         status = (info.get("attempts") or [{}])[-1].get("api_error_status")
         reason = f"API error {status}" if status else "an error"
+    # Fetched again: CBorg may have changed the model since the run started.
+    entry = cborg.model_entry(model)
+    if entry is None:
+        sys.exit(f"lil-agent: CBorg no longer lists {model!r}; the session can't be resumed")
     print(f"resuming session {session_id[:8]} in {run_dir}")
     message = message or RESUME_MESSAGE.format(reason=reason, memory_line=memory_line())
-    return _execute(run_dir, model, message, session_id=session_id, max_turns=max_turns,
-                    timeout_min=timeout_min, interactive=interactive)
+    return _execute(run_dir, model, message, entry, session_id=session_id,
+                    max_turns=max_turns, timeout_min=timeout_min, interactive=interactive)

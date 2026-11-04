@@ -1,0 +1,59 @@
+{
+  "_about": [
+    "CBorg labels each model in /model/info (model_info.display_name, e.g. 'CBorg Coder",
+    "Ultra - Mistral Large 4'), and lil-agent records that label in every run. This file",
+    "keeps what the live label can't: which model each backend ran, and when. Keys are",
+    "backends (litellm_params.model); many aliases can share one backend. 'history' is",
+    "oldest first: 'from' is the date a mapping was first observed; 'display_name' and",
+    "'context' (max_input_tokens) are what CBorg reported then. lil-agent warns when the",
+    "live label or context differs from the period in effect, which is how a silent",
+    "switch shows up. When CBorg changes a model, add a history entry rather than",
+    "editing the old one."
+  ],
+  "hosted_vllm/lbl/cborg-coder-ultra": {
+    "aliases": [
+      "lbl/cborg-coder-ultra",
+      "cborg-coder-ultra",
+      "mistral-large-4",
+      "cborg-coder-ultra-{nothink,low,medium,high,xhigh,max} (reasoning effort)"
+    ],
+    "history": [
+      {
+        "from": "2026-11-04",
+        "model": "Mistral Large 4 (Mistral AI)",
+        "display_name": "CBorg Coder Ultra - Mistral Large 4 (Free)",
+        "context": 229376,
+        "evidence": "CBorg display name; CBorg team, 2026-11-04; self-report: Mistral AI"
+      }
+    ]
+  },
+  "hosted_vllm/lbl/cborg-coder-max": {
+    "aliases": [
+      "lbl/cborg-coder-max",
+      "cborg-coder-max",
+      "cborg-coder-max-autocompact"
+    ],
+    "history": [
+      {
+        "from": "2026-11-04",
+        "model": "GLM 5.3 Flash (Z.ai)",
+        "display_name": "CBorg Coder Max - GLM 5.3 Flash (Free)",
+        "context": 229376,
+        "evidence": "CBorg display name; self-report: Z.ai GLM. Replaced backend openai/cborg-coder-max"
+      }
+    ]
+  },
+  "openai/cborg-coder-max": {
+    "aliases": [
+      "lbl/cborg-coder-max (until about 2026-11-04)"
+    ],
+    "history": [
+      {
+        "from": "2026-10-30",
+        "model": "GLM (Z.ai), release unknown",
+        "context": 917504,
+        "evidence": "self-report: Z.ai GLM; served from ext2.cborg.lbl.gov; display name not recorded. The model behind lil-agent's 2026-10-30 tests"
+      }
+    ]
+  }
+}
