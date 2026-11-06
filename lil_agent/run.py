@@ -10,6 +10,7 @@ Two guards keep everything at LBL:
   and no read access to credentials; WebFetch and WebSearch are disabled.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -50,11 +51,13 @@ is ambiguous, make a reasonable choice and record it.
 Bash call: commands chained with &&, ; or | are rejected here, so put multi-step work in \
 a script.
 - Do all computation in Python (python3 has pandas, numpy, scipy, statsmodels, \
-scikit-learn, matplotlib and seaborn). Save each analysis script under outputs/code/ \
-and run it from there, so the analysis can be rerun.
+scikit-learn, matplotlib and seaborn). Save each analysis script and run it from there, \
+so the analysis can be rerun.
 - Never type numbers into a report by hand: take them from files your code wrote.
-- Put everything you produce under outputs/, and keep a log of what you did and why \
-in outputs/notes.md.
+- Put everything you produce under outputs/. If the instructions or a skill specify an \
+output layout (folder names, report files, a decision log), create that layout inside \
+outputs/ and follow it. Otherwise save scripts in outputs/code/ and keep a log of what you \
+did and why in outputs/notes.md.
 {memory_line}
 {reasoning_line}
 {skill_line}
@@ -79,8 +82,9 @@ tables you no longer need. A script that dies with "Killed: 9" (exit code 137 or
 out of memory: make it leaner rather than rerunning it."""
 
 RESUME_MESSAGE = """\
-Your previous session stopped before you finished ({reason}). Look at outputs/notes.md \
-and what is already in outputs/, then continue the task from where you left off.
+Your previous session stopped before you finished ({reason}). Look at your log of what \
+you did (outputs/notes.md, or the decision log the instructions asked for) and at what is \
+already in outputs/, then continue the task from where you left off.
 {memory_line}
 {reasoning_line}"""
 
@@ -128,6 +132,17 @@ def install_skills(run_dir, extra=None):
         shutil.copytree(src, target / name,
                         ignore=shutil.ignore_patterns(".claude", ".lil", ".git", "outputs"))
     return sorted(sources)
+
+
+def skill_record(folder):
+    """Name, declared version and a fingerprint of every file in a skill folder."""
+    front = (folder / "SKILL.md").read_text(errors="replace").split("\n---", 1)[0]
+    version = re.search(r"^\s*version:\s*['\"]?([^'\"\n]+)", front, re.M)
+    digest = hashlib.sha256()
+    for f in sorted(p for p in folder.rglob("*") if p.is_file()):
+        digest.update(f.relative_to(folder).as_posix().encode() + b"\0" + f.read_bytes())
+    return {"name": folder.name, "version": version.group(1).strip() if version else None,
+            "sha256": digest.hexdigest()[:16]}
 
 
 def prepare(zip_path, model, skill, runs_dir):
@@ -539,9 +554,12 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
     print(f"run directory: {run_dir}")
     if skills:
         print(f"skills installed: {', '.join(skills)}")
+    records = [skill_record(run_dir / ".claude" / "skills" / name) for name in skills]
+    for r in records:
+        print(f"  {r['name']} {r['version'] or '(no version)'}, fingerprint {r['sha256']}")
     (run_dir / ".lil" / "run.json").write_text(json.dumps({
         "zip": str(zip_path), "model": model, "cborg_model_entry": entry,
-        "skills": skills, "attempts": []}, indent=2))
+        "skills": records, "attempts": []}, indent=2))
 
     skill_line = ("- Skills from the package: " +
                   ", ".join(f".claude/skills/{s}/SKILL.md" for s in skills) +

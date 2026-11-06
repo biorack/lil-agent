@@ -63,6 +63,22 @@ A package needs:
 
 `examples/make_demo_study.py` builds one in this layout.
 
+### Skills kept in this repository
+
+[skills/](skills/) holds versioned skills to copy into packages under
+`skills/`, or to pass with `--skill`. lil-agent never applies them on its
+own: a run uses only what its package carries or what you pass.
+
+| Skill | Version | What it is |
+|---|---|---|
+| [untargeted-lcms-analysis](skills/untargeted-lcms-analysis/SKILL.md) | 1.0.0 | generic analysis plan for one untargeted LC-MS/MS results archive: archive map, design, QC, comparisons, one self-contained report |
+
+Each skill declares `metadata.version` in its `SKILL.md` front matter and
+keeps a `CHANGELOG.md`. Every run records, for each skill it used, the
+name, declared version and a fingerprint (SHA-256) of the skill's files in
+`.lil/run.json`, so a result can be traced to the exact plan that produced
+it, even if someone edited a skill without bumping its version.
+
 ## Commands
 
 | Command | |
@@ -78,7 +94,12 @@ A package needs:
 
 ## What a run produces
 
-`~/lil_runs/<study>-<model>-<timestamp>/` contains:
+`~/lil_runs/<study>-<model>-<timestamp>/` contains the following. Everything
+the agent produces goes under `outputs/`. If the package's instructions or
+skills specify an output layout (for example, the untargeted plan's
+`design.md`, `decisions.md`, numbered `figures/F01_…` and `tables/T01_…`
+and a self-contained `report.html`), the agent builds that layout inside
+`outputs/`. Otherwise it uses this default:
 
 ```
 <the unzipped package, untouched>
@@ -89,7 +110,8 @@ outputs/
   report.md    draft write-up
   notes.md     the agent's log of what it did and every judgment call
 .lil/
-  run.json         model, CBorg model entry, Claude Code version, skills, timings, exit status
+  run.json         model and its provenance, Claude Code version, skills (name, version,
+                   fingerprint), timings, exit status
   transcript.jsonl every message and tool call
   network.log      every connection Claude Code attempted, allowed or blocked
 .claude/settings.json  the sandbox and permission settings used
@@ -228,6 +250,7 @@ runs gave the same scientific result:
 |---|---|
 | [lil_agent/](lil_agent/) | the CLI: `run.py` (study runs), `proxy.py` (network guard), `cborg.py`, `cli.py` |
 | [cborg/claude-cborg](cborg/claude-cborg) | Claude Code pointed at a CBorg model; usable on its own |
+| [skills/](skills/) | versioned skills to bundle in study packages (see above) |
 | [examples/make_demo_study.py](examples/make_demo_study.py) | synthetic study package for testing |
 | [CBORG.md](CBORG.md) | which LBL-hosted models exist, how they compared, CBorg quirks |
 | [cborg_models.json](cborg_models.json) | which model each CBorg backend ran, and when |
