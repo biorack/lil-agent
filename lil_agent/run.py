@@ -23,7 +23,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import cborg
+from . import cborg, massive
 from .proxy import AllowlistProxy
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +43,7 @@ RETRIES = 3
 RETRY_WAIT_S = 120
 
 PROMPT = """\
-This folder is a study package unzipped from {zip_name}. Find the instructions in it \
+This folder is a study package {origin}. Find the instructions in it \
 and carry them out completely. No one is available to answer questions: when something \
 is ambiguous, make a reasonable choice and record it.
 
@@ -145,23 +145,32 @@ def skill_record(folder):
             "sha256": digest.hexdigest()[:16]}
 
 
-def prepare(zip_path, model, skill, runs_dir):
-    slug = zip_path.stem
+def _new_run_dir(slug, model, runs_dir):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = runs_dir / f"{slug}-{model.split('/')[-1]}-{stamp}"
     (run_dir / ".lil").mkdir(parents=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(run_dir)
+    return run_dir
+
+
+def _finish_run_dir(run_dir, skill, message, ignore=()):
+    """Sandbox settings, skills, outputs/ and the run's git repo."""
     (run_dir / ".claude").mkdir(exist_ok=True)
     (run_dir / ".claude" / "settings.json").write_text(json.dumps(settings(), indent=2))
     skills = install_skills(run_dir, skill)
     (run_dir / "outputs").mkdir(exist_ok=True)
-    (run_dir / ".gitignore").write_text(".lil/mpl/\n")
+    (run_dir / ".gitignore").write_text("".join(f"{p}\n" for p in (".lil/mpl/", *ignore)))
     # A git repo shows exactly what the agent created or changed.
     git(run_dir, "init", "-q")
     git(run_dir, "add", "-A")
-    git(run_dir, "commit", "-qm", "study package as unzipped")
-    return run_dir, skills
+    git(run_dir, "commit", "-qm", message)
+    return skills
+
+
+def prepare(zip_path, model, skill, runs_dir):
+    run_dir = _new_run_dir(zip_path.stem, model, runs_dir)
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(run_dir)
+    return run_dir, _finish_run_dir(run_dir, skill, "study package as unzipped")
 
 
 def _brief(tool, args):
@@ -536,21 +545,48 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
     return 0 if rc == 0 and not info["is_error"] else 1
 
 
-def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
-        max_turns=300, timeout_min=None, interactive=False):
-    zip_path = Path(zip_path).expanduser().resolve()
-    if not zip_path.is_file():
-        sys.exit(f"lil-agent: not a file: {zip_path}")
+def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=300,
+        timeout_min=None, interactive=False, include=(), exclude=(), max_gb=5.0, task=None,
+        list_only=False):
+    """Run a study package (.zip), or a MassIVE dataset by accession (MSV...)."""
+    runs_dir = Path(runs_dir or os.environ.get("LIL_RUNS", "~/lil_runs")).expanduser()
+    from_massive = massive.is_accession(source) and not Path(source).expanduser().exists()
+    if not from_massive and (include or exclude or task or list_only):
+        sys.exit("lil-agent: --include, --exclude, --task and --list apply to MassIVE "
+                 "accessions; a zip carries its own files and instructions")
+    if from_massive:
+        prepared = massive.prepare_source(source, runs_dir, include, exclude, max_gb, list_only)
+        if prepared is None:  # --list
+            return 0
+        info, files, selection, cache = prepared
+    else:
+        zip_path = Path(source).expanduser().resolve()
+        if not zip_path.is_file():
+            sys.exit(f"lil-agent: not a file or MassIVE accession: {source}")
     skill = Path(skill).expanduser().resolve() if skill else None
     if skill and not skill.is_dir():
         sys.exit(f"lil-agent: skill must be a directory: {skill}")
-    runs_dir = Path(runs_dir or os.environ.get("LIL_RUNS", "~/lil_runs")).expanduser()
 
     entry, self_report = _check_model(model)
     if entry and not cborg.is_lbl_hosted(entry):
         print(f"warning: {model} is not LBL-hosted; data will leave LBL", file=sys.stderr)
 
-    run_dir, skills = prepare(zip_path, model, skill, runs_dir)
+    if from_massive:
+        try:
+            massive.download(info, selection, cache)
+        except massive.MassiveError as e:
+            sys.exit(f"lil-agent: {e}")
+        run_dir = _new_run_dir(info["accession"], model, runs_dir)
+        source_record = massive.populate(run_dir, info, files, selection, cache,
+                                         include, exclude, task)
+        skills = _finish_run_dir(run_dir, skill, f"package built from {info['accession']}",
+                                 ignore=("data/",))  # don't copy gigabytes into git
+        origin = (f"built by lil-agent from the public MassIVE dataset {info['accession']} "
+                  f"(MASSIVE.md describes it; the downloaded files are in data/)")
+    else:
+        run_dir, skills = prepare(zip_path, model, skill, runs_dir)
+        source_record = {"type": "zip", "path": str(zip_path)}
+        origin = f"unzipped from {zip_path.name}"
     print(f"run directory: {run_dir}")
     if skills:
         print(f"skills installed: {', '.join(skills)}")
@@ -558,14 +594,14 @@ def run(zip_path, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None,
     for r in records:
         print(f"  {r['name']} {r['version'] or '(no version)'}, fingerprint {r['sha256']}")
     (run_dir / ".lil" / "run.json").write_text(json.dumps({
-        "zip": str(zip_path), "model": model, "cborg_model_entry": entry,
+        "input": source_record, "model": model, "cborg_model_entry": entry,
         "skills": records, "attempts": []}, indent=2))
 
     skill_line = ("- Skills from the package: " +
                   ", ".join(f".claude/skills/{s}/SKILL.md" for s in skills) +
                   ". Read them before you start and follow them wherever the "
                   "instructions refer to them or they apply." if skills else "")
-    prompt = PROMPT.format(zip_name=zip_path.name, memory_line=memory_line(),
+    prompt = PROMPT.format(origin=origin, memory_line=memory_line(),
                            reasoning_line=reasoning_line(entry),
                            skill_line=skill_line)
     return _execute(run_dir, model, prompt, entry, self_report, max_turns=max_turns,

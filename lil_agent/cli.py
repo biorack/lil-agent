@@ -1,6 +1,7 @@
 """lil-agent: agents on LBL-hosted open-weight models (CBorg).
 
   lil-agent run STUDY.zip [--skill DIR] [--model M] [--interactive]
+  lil-agent run MSV000103868 [--list] [--include PATTERN] [--max-gb N] [--task TEXT|FILE]
   lil-agent resume RUN_DIR [--message TEXT]
   lil-agent models [--all] [--probe NAMES]
   lil-agent check
@@ -18,9 +19,11 @@ from .proxy import AllowlistProxy
 
 def cmd_run(args):
     from .run import run
-    return run(args.zip, model=args.model, skill=args.skill, runs_dir=args.runs_dir,
+    return run(args.source, model=args.model, skill=args.skill, runs_dir=args.runs_dir,
                max_turns=args.max_turns, timeout_min=args.timeout,
-               interactive=args.interactive)
+               interactive=args.interactive, include=args.include or (),
+               exclude=args.exclude or (), max_gb=args.max_gb, task=args.task,
+               list_only=args.list)
 
 
 def cmd_resume(args):
@@ -104,8 +107,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     model_default = os.environ.get("CBORG_MODEL", cborg.DEFAULT_MODEL)
 
-    r = sub.add_parser("run", help="unzip a study package and work through its instructions")
-    r.add_argument("zip")
+    r = sub.add_parser("run", help="work through a study package (.zip) or a MassIVE dataset (MSV...)")
+    r.add_argument("source", help="a study package .zip, or a MassIVE accession like MSV000103868")
     r.add_argument("--skill", help="extra skill directory (contains SKILL.md); "
                    "replaces a bundled skill with the same name")
     r.add_argument("--model", default=model_default)
@@ -115,6 +118,15 @@ def main(argv=None):
                    help="minutes before the agent is stopped (includes automatic resumes)")
     r.add_argument("--interactive", action="store_true",
                    help="open an interactive session instead of running headless")
+    g = r.add_argument_group("MassIVE datasets")
+    g.add_argument("--list", action="store_true", help="show the dataset's files and sizes, then stop")
+    g.add_argument("--include", action="append", metavar="PATTERN",
+                   help="download data files whose path or name matches (shell-style, repeatable)")
+    g.add_argument("--exclude", action="append", metavar="PATTERN", help="skip matching data files")
+    g.add_argument("--max-gb", type=float, default=5.0,
+                   help="refuse to download more than this (default 5)")
+    g.add_argument("--task", help="what to do with the data: text, or a file holding it "
+                   "(default: work out the experiment and analyze what was downloaded)")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("resume", help="continue a stopped run where its agent left off")

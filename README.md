@@ -79,11 +79,58 @@ name, declared version and a fingerprint (SHA-256) of the skill's files in
 `.lil/run.json`, so a result can be traced to the exact plan that produced
 it, even if someone edited a skill without bumping its version.
 
+## MassIVE datasets
+
+A public [MassIVE](https://massive.ucsd.edu) dataset can be the input
+instead of a zip:
+
+```bash
+lil-agent run MSV000103868 --list                       # what's in it, by folder, with sizes
+lil-agent run MSV000103868 --include '*StrigArabPeaks*NEG*'
+lil-agent run MSV000103868 --include 'raw/*C18*' --max-gb 40 \
+    --task task.md --skill ~/repos/lil_agent/skills/untargeted-lcms-analysis
+```
+
+lil-agent looks the dataset up through MassIVE's PROXI API, which gives the
+current FTP location (the `vNN` in `ftp://massive-ftp.ucsd.edu/vNN/MSV…`
+changes over time). It lists the files over FTPS, downloads the selection,
+and builds a run folder that the agent then works through offline, as with
+any package:
+
+- `MASSIVE.md`: title, submitter's summary, instruments, species, keywords,
+  and what was downloaded;
+- `massive_files.csv`: every file in the dataset, marked downloaded or not;
+- `INSTRUCTIONS.md`: your `--task` (text or a file), or by default "work out
+  what experiment this is and analyze what was downloaded";
+- `data/`: the downloaded files, under the dataset's own paths.
+
+Datasets can be very large (this example is 107 GB in 1,549 mzML files), so:
+- small metadata files always come down;
+- data files only come down if they match `--include` patterns
+  (shell-style, matched against the path or the file name; `--exclude`
+  removes matches);
+- nothing downloads if the selection exceeds `--max-gb` (default 5) or
+  won't fit on disk with 2 GB to spare. A large dataset with no `--include`
+  stops before downloading anything.
+
+Downloads go to a cache, `<runs dir>/.massive/<accession>/`. They resume if
+interrupted, are checked against MassIVE's sizes, and are reused by later
+runs. Each run hard-links its files from the cache, so they take no extra
+space, and keeps `data/` out of the run's git history. Delete the cache
+folder to reclaim the space. To use a bigger disk, point `--runs-dir`
+there. `run.json` records the accession, FTP location, selection and a
+fingerprint of the full file listing.
+
+The agent's Python can read mzML (`pymzml`, `pyteomics`), but no feature
+detection library is installed, so raw-spectra datasets are harder work
+than processed results archives.
+
 ## Commands
 
 | Command | |
 |---|---|
 | `lil-agent run STUDY.zip` | headless run; progress streams to the terminal |
+| `lil-agent run MSV…` | the same for a public MassIVE dataset; `--list`, `--include`/`--exclude PATTERN`, `--max-gb N`, `--task TEXT\|FILE` (see above) |
 | `  --skill DIR` | add a skill folder, or replace a bundled one with the same name (for trying a new version without rebuilding the zip) |
 | `  --model M` | another CBorg model, e.g. `lbl/gemma-4` (or set `CBORG_MODEL`) |
 | `  --interactive` | open a Claude Code session in the run folder instead; you approve each step |
@@ -129,6 +176,7 @@ shows everything it created.
 | Claude Code's own traffic (prompts, file contents, results) | CBorg only | Claude Code is pointed at a local proxy that only connects to `api.cborg.lbl.gov` and logs every attempt (`.lil/network.log`). Nonessential traffic (telemetry, error reports, updates) is switched off. |
 | The agent's shell commands (Python etc.) | nowhere | Claude Code's sandbox (macOS Seatbelt): no network; no reads of `~/secrets`, `~/.ssh`, `~/.aws`, `~/.config/gcloud` or `~/.claude`; no writes outside the run folder; the CBorg key is removed from their environment. |
 | Web tools | — | WebFetch and WebSearch are disabled. |
+| lil-agent's own traffic | CBorg (model list and checks) and, for MassIVE runs, MassIVE | lil-agent's Python process, not the agent, reads public dataset metadata from `massive.ucsd.edu` (HTTPS) and downloads public files from `massive-ftp.ucsd.edu` (FTPS) before the agent starts. It sends only the accession and file requests. |
 
 Verified 2026-10-30 with a hostile self-test package. `curl` to Google
 failed, reading the key file failed, the key was absent from the
