@@ -281,8 +281,10 @@ This folder holds files from the public MassIVE dataset {accession}, "{title}". 
 describes the dataset (the submitter's summary, instruments, species, keywords) and which of \
 its files were downloaded into data/; massive_files.csv lists every file in the dataset.
 
-Work out what experiment this is, then analyze the downloaded data as far as it allows, \
-following any installed skills where they fit. Say clearly what the downloaded subset can \
+Metadata and documents that lil-agent decoded from the mzML files, if any, are in decoded/: \
+treat them as the experiment's own description, and follow any instructions or analysis plan \
+among them. Work out what experiment this is, then analyze the downloaded data as far as it \
+allows, following any installed skills where they fit. Say clearly what the downloaded subset can \
 and cannot show about the dataset as a whole.
 """
 

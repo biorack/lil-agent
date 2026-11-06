@@ -125,6 +125,40 @@ The agent's Python can read mzML (`pymzml`, `pyteomics`), but no feature
 detection library is installed, so raw-spectra datasets are harder work
 than processed results archives.
 
+## Metadata embedded in mzML files (SpectraCodec)
+
+[SpectraCodec](https://github.com/biorack/SpectraCodec) embeds a JSON
+message in an mzML file's first spectrum, as extra peaks. The message can
+hold structured metadata (run, sample, methods, QC, often the whole
+dataset's run table) and complete documents, each with its SHA-256. It can
+be signed (Ed25519) over both the message and the acquired spectra.
+
+Whatever the input, zip or MassIVE, lil-agent checks every mzML in the run
+folder before the agent starts and decodes what it finds into `decoded/`:
+
+```
+decoded/
+  SPECTRACODEC.md   summary: how many files carry messages, signature results, documents
+  about.json, methods.json, …   metadata identical in every file
+  dataset_runs.csv  the dataset's run table, when the message carries one
+  runs.csv          one row per mzML: the per-file metadata (run.*, sample.*), flattened
+  runs/<file>.json  the same, per file
+  files/            embedded documents, rebuilt byte-for-byte (hash checked)
+```
+
+Each file's signature is checked against the LBNL SpectraCodec key
+(fingerprint `SHA256:lbrclU9WYbrXjl/AWl8VOWFUEm5EQgGybgdSKZzTwfA`). A valid
+signature means neither the metadata nor the spectra changed since signing.
+The agent is told to start with `decoded/SPECTRACODEC.md`, and to skip each
+encoded file's first spectrum (the carrier) when analyzing spectra.
+`run.json` records the counts, signature results and the codec version.
+
+SpectraCodec is licensed by Berkeley Lab for non-commercial use only, so it
+isn't part of lil-agent. On first use lil-agent downloads it from GitHub,
+pinned to a specific commit and checked against SHA-256 hashes, into
+`<runs dir>/.tools/`. Set `SPECTRACODEC_PY` to use a local
+`spectra_codec.py` instead.
+
 ## Commands
 
 | Command | |
@@ -176,7 +210,7 @@ shows everything it created.
 | Claude Code's own traffic (prompts, file contents, results) | CBorg only | Claude Code is pointed at a local proxy that only connects to `api.cborg.lbl.gov` and logs every attempt (`.lil/network.log`). Nonessential traffic (telemetry, error reports, updates) is switched off. |
 | The agent's shell commands (Python etc.) | nowhere | Claude Code's sandbox (macOS Seatbelt): no network; no reads of `~/secrets`, `~/.ssh`, `~/.aws`, `~/.config/gcloud` or `~/.claude`; no writes outside the run folder; the CBorg key is removed from their environment. |
 | Web tools | — | WebFetch and WebSearch are disabled. |
-| lil-agent's own traffic | CBorg (model list and checks) and, for MassIVE runs, MassIVE | lil-agent's Python process, not the agent, reads public dataset metadata from `massive.ucsd.edu` (HTTPS) and downloads public files from `massive-ftp.ucsd.edu` (FTPS) before the agent starts. It sends only the accession and file requests. |
+| lil-agent's own traffic | CBorg (model list and checks); for MassIVE runs, MassIVE; once, GitHub (SpectraCodec) | lil-agent's Python process, not the agent, reads public dataset metadata from `massive.ucsd.edu` (HTTPS) and downloads public files from `massive-ftp.ucsd.edu` (FTPS) before the agent starts. It sends only the accession and file requests. When a run folder holds mzML files, it downloads the pinned SpectraCodec file from `raw.githubusercontent.com` once (hash-checked) to decode them locally. |
 
 Verified 2026-10-30 with a hostile self-test package. `curl` to Google
 failed, reading the key file failed, the key was absent from the

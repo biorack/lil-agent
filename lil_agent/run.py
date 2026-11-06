@@ -23,7 +23,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import cborg, massive
+from . import cborg, massive, spectracodec
 from .proxy import AllowlistProxy
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +61,7 @@ did and why in outputs/notes.md.
 {memory_line}
 {reasoning_line}
 {skill_line}
+{codec_line}
 Finish with a short summary of what you produced and anything you could not do."""
 
 REASONING_LINE = """\
@@ -152,8 +153,16 @@ def _new_run_dir(slug, model, runs_dir):
     return run_dir
 
 
-def _finish_run_dir(run_dir, skill, message, ignore=()):
-    """Sandbox settings, skills, outputs/ and the run's git repo."""
+CODEC_LINE = """\
+- lil-agent decoded the metadata and documents embedded in the mzML files (SpectraCodec) \
+into decoded/; start with decoded/SPECTRACODEC.md. In each encoded mzML the first spectrum \
+is the carrier holding that message as artificial peaks: skip it when analyzing spectra."""
+
+
+def _finish_run_dir(run_dir, runs_dir, skill, message, ignore=()):
+    """SpectraCodec decoding, sandbox settings, skills, outputs/ and the run's git
+    repo. Returns (skill names, SpectraCodec record or None)."""
+    codec = spectracodec.decode_folder(run_dir, runs_dir)
     (run_dir / ".claude").mkdir(exist_ok=True)
     (run_dir / ".claude" / "settings.json").write_text(json.dumps(settings(), indent=2))
     skills = install_skills(run_dir, skill)
@@ -163,14 +172,15 @@ def _finish_run_dir(run_dir, skill, message, ignore=()):
     git(run_dir, "init", "-q")
     git(run_dir, "add", "-A")
     git(run_dir, "commit", "-qm", message)
-    return skills
+    return skills, codec
 
 
 def prepare(zip_path, model, skill, runs_dir):
     run_dir = _new_run_dir(zip_path.stem, model, runs_dir)
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(run_dir)
-    return run_dir, _finish_run_dir(run_dir, skill, "study package as unzipped")
+    skills, codec = _finish_run_dir(run_dir, runs_dir, skill, "study package as unzipped")
+    return run_dir, skills, codec
 
 
 def _brief(tool, args):
@@ -579,12 +589,13 @@ def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=
         run_dir = _new_run_dir(info["accession"], model, runs_dir)
         source_record = massive.populate(run_dir, info, files, selection, cache,
                                          include, exclude, task)
-        skills = _finish_run_dir(run_dir, skill, f"package built from {info['accession']}",
-                                 ignore=("data/",))  # don't copy gigabytes into git
+        skills, codec = _finish_run_dir(run_dir, runs_dir, skill,
+                                        f"package built from {info['accession']}",
+                                        ignore=("data/",))  # don't copy gigabytes into git
         origin = (f"built by lil-agent from the public MassIVE dataset {info['accession']} "
                   f"(MASSIVE.md describes it; the downloaded files are in data/)")
     else:
-        run_dir, skills = prepare(zip_path, model, skill, runs_dir)
+        run_dir, skills, codec = prepare(zip_path, model, skill, runs_dir)
         source_record = {"type": "zip", "path": str(zip_path)}
         origin = f"unzipped from {zip_path.name}"
     print(f"run directory: {run_dir}")
@@ -595,13 +606,14 @@ def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=
         print(f"  {r['name']} {r['version'] or '(no version)'}, fingerprint {r['sha256']}")
     (run_dir / ".lil" / "run.json").write_text(json.dumps({
         "input": source_record, "model": model, "cborg_model_entry": entry,
-        "skills": records, "attempts": []}, indent=2))
+        "skills": records, "spectracodec": codec, "attempts": []}, indent=2))
 
     skill_line = ("- Skills from the package: " +
                   ", ".join(f".claude/skills/{s}/SKILL.md" for s in skills) +
                   ". Read them before you start and follow them wherever the "
                   "instructions refer to them or they apply." if skills else "")
-    prompt = PROMPT.format(origin=origin, memory_line=memory_line(),
+    codec_line = CODEC_LINE if codec and codec.get("encoded") else ""
+    prompt = PROMPT.format(origin=origin, memory_line=memory_line(), codec_line=codec_line,
                            reasoning_line=reasoning_line(entry),
                            skill_line=skill_line)
     return _execute(run_dir, model, prompt, entry, self_report, max_turns=max_turns,
