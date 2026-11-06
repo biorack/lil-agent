@@ -175,14 +175,38 @@ def folder_summary(files, selected=()):
     return sorted(groups.items())
 
 
-def print_inventory(info, files):
+def _free(path):
+    """Free bytes on the disk that holds path (or would, once created)."""
+    path = Path(path)
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return shutil.disk_usage(path).free
+
+
+def cache_dir(acc, runs_dir, temp_dir=None, create=True):
+    """Where a dataset's downloads are staged: <temp dir>/massive/<accession> if a
+    temp dir is given (created if its parent exists), else <runs dir>/.massive/."""
+    if not temp_dir:
+        return runs_dir / ".massive" / acc
+    root = Path(temp_dir).expanduser().resolve()
+    if not root.exists() and not root.parent.exists():
+        sys.exit(f"lil-agent: --temp-dir {root} doesn't exist and neither does its parent "
+                 f"(is the drive mounted?)")
+    if create:
+        root.mkdir(exist_ok=True)
+    if not os.access(root if root.exists() else root.parent, os.W_OK):
+        sys.exit(f"lil-agent: --temp-dir {root} isn't writable")
+    return root / "massive" / acc
+
+
+def print_inventory(info, files, cache):
     print(f"{info['accession']}: {info['title']}")
     print(f"  {info['page']}")
     print(f"  {info['ftp']}")
     print(f"  {len(files)} files, {_gb(sum(s for _, s, _ in files))}")
     for key, (n, size, _) in folder_summary(files):
         print(f"  {n:6d} files {_gb(size):>10}  {key}")
-    print(f"  free disk where runs go: {_gb(shutil.disk_usage(Path.home()).free)}")
+    print(f"  downloads would be staged in {cache} ({_gb(_free(cache))} free there)")
 
 
 def plan(files, include, exclude, max_gb, cache, acc="ACC"):
@@ -199,8 +223,10 @@ def plan(files, include, exclude, max_gb, cache, acc="ACC"):
     total = sum(s for _, s, _ in data)
     limit = max_gb * 1e9
     examples = ("  examples: --include '*POS*'   --include 'raw/<folder>/*'   "
-                f"--exclude '*Blank*'   --max-gb 20\n  see everything: lil-agent run "
-                f"{acc} --list")
+                f"--exclude '*Blank*'   --max-gb 20\n"
+                f"  a whole large dataset: --max-gb {max(int(total / 1e9) + 1, 20)} "
+                f"--temp-dir /path/on/a/big/disk\n"
+                f"  see everything: lil-agent run {acc} --list")
     if not include and total > limit:
         raise SystemExit(f"lil-agent: this dataset's data files total {_gb(total)}, over the "
                          f"{max_gb:g} GB limit. Choose files with --include (shell-style "
@@ -215,11 +241,12 @@ def plan(files, include, exclude, max_gb, cache, acc="ACC"):
     cached = sum(s for p, s, _ in data + meta if (cache / p).is_file()
                  and (cache / p).stat().st_size == s)
     need = sum(s for _, s, _ in data + meta) - cached
-    free = shutil.disk_usage(cache if cache.exists() else Path.home()).free
+    free = _free(cache)
     if need + DISK_MARGIN_BYTES > free:
         raise SystemExit(f"lil-agent: the download needs {_gb(need)} but only {_gb(free)} is "
-                         f"free (keeping a {_gb(DISK_MARGIN_BYTES)} margin). Narrow the "
-                         f"selection, free space, or point --runs-dir at a bigger disk.")
+                         f"free where it would be staged ({cache}), keeping a "
+                         f"{_gb(DISK_MARGIN_BYTES)} margin. Stage it on a bigger disk with "
+                         f"--temp-dir, or narrow the selection.")
     return meta + data
 
 
@@ -248,7 +275,10 @@ def download(info, selection, cache):
                 if part.stat().st_size != size:
                     raise MassiveError(f"{rel}: got {part.stat().st_size} bytes, expected {size}")
                 part.replace(target)
-                target.chmod(0o444)  # the cache is shared by runs; keep it read-only
+                try:
+                    target.chmod(0o444)  # the cache is shared by runs; keep it read-only
+                except OSError:
+                    pass
                 break
             except (ftplib.all_errors + (OSError, MassiveError)) as e:
                 if not is_data(rel) and isinstance(e, ftplib.error_perm):
@@ -302,13 +332,21 @@ def populate(run_dir, info, files, selection, cache, include, exclude, task=None
     chosen = {p for p, _, _ in selection if (cache / p).is_file()}
     selection = [f for f in selection if f[0] in chosen]
     data_dir = run_dir / "data"
+    links = {"hard": 0, "symbolic": 0}
     for rel in sorted(chosen):
         dest = data_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # Never copy: datasets can be far larger than the disk the run folder is on.
         try:
-            os.link(cache / rel, dest)  # no extra disk; same file as the cache
+            os.link(cache / rel, dest)  # same disk: no extra space
+            links["hard"] += 1
         except OSError:
-            shutil.copy2(cache / rel, dest)
+            try:
+                os.symlink((cache / rel).resolve(), dest)  # e.g. staged on another disk
+                links["symbolic"] += 1
+            except OSError as e:
+                raise MassiveError(f"couldn't link {rel} from {cache} into the run folder "
+                                   f"({e})") from None
 
     with open(run_dir / "massive_files.csv", "w", newline="") as fh:
         w = csv.writer(fh)
@@ -327,7 +365,9 @@ def populate(run_dir, info, files, selection, cache, include, exclude, task=None
             lines += [f"**{label}:** " + "; ".join(map(str, info[key])) + "  "]
     lines += ["", "## What was downloaded", "",
               f"{len(chosen)} of {len(files)} files ({_gb(sel_bytes)} of "
-              f"{_gb(sum(s for _, s, _ in files))}), under `data/` with the dataset's own paths. "
+              f"{_gb(sum(s for _, s, _ in files))}), under `data/` with the dataset's own paths "
+              f"({'symbolic' if links['symbolic'] else 'hard'} links to the download cache, which "
+              f"is read-only: write anything derived to outputs/). "
               f"Selection: include {include or 'all data files'}"
               + (f", exclude {exclude}" if exclude else "")
               + "; small metadata files are always included.", "",
@@ -346,10 +386,11 @@ def populate(run_dir, info, files, selection, cache, include, exclude, task=None
             "listed_bytes": sum(s for _, s, _ in files), "listing_sha256": listing,
             "include": list(include), "exclude": list(exclude),
             "downloaded_files": len(chosen), "downloaded_bytes": sel_bytes,
-            "task": "custom" if text else "default"}
+            "task": "custom" if text else "default",
+            "cache": str(cache), "links": links}
 
 
-def prepare_source(acc, runs_dir, include, exclude, max_gb, list_only):
+def prepare_source(acc, runs_dir, include, exclude, max_gb, list_only, temp_dir=None):
     """Look up and list a dataset; with list_only, print the inventory and stop.
     Returns (info, files, selection, cache) ready for download()."""
     try:
@@ -357,9 +398,9 @@ def prepare_source(acc, runs_dir, include, exclude, max_gb, list_only):
         files = list_files(info)
     except MassiveError as e:
         sys.exit(f"lil-agent: {e}")
+    cache = cache_dir(info["accession"], runs_dir, temp_dir, create=not list_only)
     if list_only:
-        print_inventory(info, files)
+        print_inventory(info, files, cache)
         return None
-    cache = runs_dir / ".massive" / info["accession"]
     selection = plan(files, include, exclude, max_gb, cache, info["accession"])
     return info, files, selection, cache

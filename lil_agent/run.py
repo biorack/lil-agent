@@ -557,7 +557,7 @@ def _execute(run_dir, model, message, entry, self_report, session_id=None, max_t
 
 def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=300,
         timeout_min=None, interactive=False, include=(), exclude=(), max_gb=5.0, task=None,
-        list_only=False):
+        list_only=False, temp_dir=None):
     """Run a study package (.zip), or a MassIVE dataset by accession (MSV...)."""
     runs_dir = Path(runs_dir or os.environ.get("LIL_RUNS", "~/lil_runs")).expanduser()
     from_massive = massive.is_accession(source) and not Path(source).expanduser().exists()
@@ -565,7 +565,8 @@ def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=
         sys.exit("lil-agent: --include, --exclude, --task and --list apply to MassIVE "
                  "accessions; a zip carries its own files and instructions")
     if from_massive:
-        prepared = massive.prepare_source(source, runs_dir, include, exclude, max_gb, list_only)
+        prepared = massive.prepare_source(source, runs_dir, include, exclude, max_gb, list_only,
+                                          temp_dir)
         if prepared is None:  # --list
             return 0
         info, files, selection, cache = prepared
@@ -587,8 +588,11 @@ def run(source, model=cborg.DEFAULT_MODEL, skill=None, runs_dir=None, max_turns=
         except massive.MassiveError as e:
             sys.exit(f"lil-agent: {e}")
         run_dir = _new_run_dir(info["accession"], model, runs_dir)
-        source_record = massive.populate(run_dir, info, files, selection, cache,
-                                         include, exclude, task)
+        try:
+            source_record = massive.populate(run_dir, info, files, selection, cache,
+                                             include, exclude, task)
+        except massive.MassiveError as e:
+            sys.exit(f"lil-agent: {e}")
         skills, codec = _finish_run_dir(run_dir, runs_dir, skill,
                                         f"package built from {info['accession']}",
                                         ignore=("data/",))  # don't copy gigabytes into git

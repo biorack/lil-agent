@@ -89,6 +89,7 @@ lil-agent run MSV000103868 --list                       # what's in it, by folde
 lil-agent run MSV000103868 --include '*StrigArabPeaks*NEG*'
 lil-agent run MSV000103868 --include 'raw/*C18*' --max-gb 40 \
     --task task.md --skill ~/repos/lil_agent/skills/untargeted-lcms-analysis
+lil-agent run MSV000103862 --max-gb 50 --temp-dir /Volumes/BigDisk/lil_staging   # whole dataset
 ```
 
 lil-agent looks the dataset up through MassIVE's PROXI API, which gives the
@@ -113,13 +114,21 @@ Datasets can be very large (this example is 107 GB in 1,549 mzML files), so:
   won't fit on disk with 2 GB to spare. A large dataset with no `--include`
   stops before downloading anything.
 
-Downloads go to a cache, `<runs dir>/.massive/<accession>/`. They resume if
-interrupted, are checked against MassIVE's sizes, and are reused by later
-runs. Each run hard-links its files from the cache, so they take no extra
-space, and keeps `data/` out of the run's git history. Delete the cache
-folder to reclaim the space. To use a bigger disk, point `--runs-dir`
-there. `run.json` records the accession, FTP location, selection and a
-fingerprint of the full file listing.
+Downloads are staged in a cache, `<runs dir>/.massive/<accession>/` by
+default. For datasets bigger than the laptop's free disk, stage them
+elsewhere with `--temp-dir DIR` (also spelled `--temp_dir`, or set
+`LIL_TEMP_DIR`). Files then go to `DIR/massive/<accession>/`. `DIR` is
+created if its parent exists. If the parent is missing (say, the drive isn't
+mounted), lil-agent stops rather than writing somewhere else.
+
+The free-space check and `--list` look at the staging disk. Downloads resume
+if interrupted, are checked against MassIVE's sizes, and are reused by later
+runs. Each run links its files from the cache and never copies them: hard
+links on the same disk, symbolic links across disks. A run folder on the
+laptop with 50 GB staged on an external disk therefore takes almost no
+laptop space. `data/` stays out of the run's git history. Delete the cache
+folder to reclaim the space. `run.json` records the accession, FTP location, selection, cache location,
+link type and a fingerprint of the full file listing.
 
 The agent's Python can read mzML (`pymzml`, `pyteomics`), but no feature
 detection library is installed, so raw-spectra datasets are harder work
@@ -164,7 +173,7 @@ pinned to a specific commit and checked against SHA-256 hashes, into
 | Command | |
 |---|---|
 | `lil-agent run STUDY.zip` | headless run; progress streams to the terminal |
-| `lil-agent run MSV…` | the same for a public MassIVE dataset; `--list`, `--include`/`--exclude PATTERN`, `--max-gb N`, `--task TEXT\|FILE` (see above) |
+| `lil-agent run MSV…` | the same for a public MassIVE dataset; `--list`, `--include`/`--exclude PATTERN`, `--max-gb N`, `--temp-dir DIR`, `--task TEXT\|FILE` (see above) |
 | `  --skill DIR` | add a skill folder, or replace a bundled one with the same name (for trying a new version without rebuilding the zip) |
 | `  --model M` | another CBorg model, e.g. `lbl/gemma-4` (or set `CBORG_MODEL`) |
 | `  --interactive` | open a Claude Code session in the run folder instead; you approve each step |

@@ -1,7 +1,8 @@
 """lil-agent: agents on LBL-hosted open-weight models (CBorg).
 
   lil-agent run STUDY.zip [--skill DIR] [--model M] [--interactive]
-  lil-agent run MSV000103868 [--list] [--include PATTERN] [--max-gb N] [--task TEXT|FILE]
+  lil-agent run MSV000103868 [--list] [--include PATTERN] [--max-gb N] [--temp-dir DIR]
+                             [--task TEXT|FILE]
   lil-agent resume RUN_DIR [--message TEXT]
   lil-agent models [--all] [--probe NAMES]
   lil-agent check
@@ -23,7 +24,7 @@ def cmd_run(args):
                max_turns=args.max_turns, timeout_min=args.timeout,
                interactive=args.interactive, include=args.include or (),
                exclude=args.exclude or (), max_gb=args.max_gb, task=args.task,
-               list_only=args.list)
+               list_only=args.list, temp_dir=args.temp_dir)
 
 
 def cmd_resume(args):
@@ -125,6 +126,10 @@ def main(argv=None):
     g.add_argument("--exclude", action="append", metavar="PATTERN", help="skip matching data files")
     g.add_argument("--max-gb", type=float, default=5.0,
                    help="refuse to download more than this (default 5)")
+    g.add_argument("--temp-dir", "--temp_dir", dest="temp_dir", metavar="DIR",
+                   default=os.environ.get("LIL_TEMP_DIR"),
+                   help="stage and cache downloads in DIR/massive/<accession>, e.g. on a big "
+                        "external disk (default: <runs dir>/.massive; env LIL_TEMP_DIR)")
     g.add_argument("--task", help="what to do with the data: text, or a file holding it "
                    "(default: work out the experiment and analyze what was downloaded)")
     r.set_defaults(func=cmd_run)
