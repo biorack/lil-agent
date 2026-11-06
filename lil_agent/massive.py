@@ -251,6 +251,13 @@ def download(info, selection, cache):
                 target.chmod(0o444)  # the cache is shared by runs; keep it read-only
                 break
             except (ftplib.all_errors + (OSError, MassiveError)) as e:
+                if not is_data(rel) and isinstance(e, ftplib.error_perm):
+                    # MassIVE lists some entries (e.g. ccms_peak) that it refuses to
+                    # serve; a metadata file is not worth stopping the run for.
+                    print(f"  skipped {rel}: the server refused it ({e})", flush=True)
+                    part.unlink(missing_ok=True)
+                    size = 0
+                    break
                 if attempt == 3:
                     raise MassiveError(f"couldn't download {rel} ({e}); rerun the same command "
                                        f"to resume") from None
@@ -291,7 +298,9 @@ and cannot show about the dataset as a whole.
 
 def populate(run_dir, info, files, selection, cache, include, exclude, task=None):
     """Write MASSIVE.md, massive_files.csv, INSTRUCTIONS.md and data/ into the run folder."""
-    chosen = {p for p, _, _ in selection}
+    # Metadata files the server refused (see download) are not in the cache.
+    chosen = {p for p, _, _ in selection if (cache / p).is_file()}
+    selection = [f for f in selection if f[0] in chosen]
     data_dir = run_dir / "data"
     for rel in sorted(chosen):
         dest = data_dir / rel
